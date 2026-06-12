@@ -9,6 +9,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,25 +31,32 @@ public class BacktestController {
 
     /** Long-running work: accept, return the job, let the client poll. */
     @PostMapping
-    public ResponseEntity<JobDetail> submit(@Valid @RequestBody BacktestRequest request) {
-        JobDetail job = service.submit(request);
+    public ResponseEntity<JobDetail> submit(@Valid @RequestBody BacktestRequest request,
+                                            Authentication auth) {
+        JobDetail job = service.submit(request, userId(auth));
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(job);
     }
 
     @GetMapping("/{id}")
-    public JobDetail get(@PathVariable UUID id) {
-        return service.get(id);
+    public JobDetail get(@PathVariable UUID id, Authentication auth) {
+        return service.get(id, userId(auth));
     }
 
     @GetMapping
     public Page<JobSummary> list(@RequestParam(defaultValue = "0") int page,
-                                 @RequestParam(defaultValue = "20") int size) {
-        return service.list(PageRequest.of(page, Math.min(size, 100)));
+                                 @RequestParam(defaultValue = "20") int size,
+                                 Authentication auth) {
+        return service.list(PageRequest.of(page, Math.min(size, 100)), userId(auth));
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@PathVariable UUID id) {
-        service.delete(id);
+    public ResponseEntity<Void> delete(@PathVariable UUID id, Authentication auth) {
+        service.delete(id, userId(auth));
         return ResponseEntity.noContent().build();
+    }
+
+    /** The JwtAuthFilter stores the verified user id as the principal. */
+    private Long userId(Authentication auth) {
+        return (Long) auth.getPrincipal();
     }
 }

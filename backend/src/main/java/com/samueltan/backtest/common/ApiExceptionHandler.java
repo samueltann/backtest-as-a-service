@@ -1,5 +1,7 @@
 package com.samueltan.backtest.common;
 
+import com.samueltan.backtest.auth.AuthService.EmailTakenException;
+import com.samueltan.backtest.auth.AuthService.InvalidCredentialsException;
 import com.samueltan.backtest.backtest.BacktestService.CapacityExceededException;
 import com.samueltan.backtest.backtest.BacktestService.JobNotFoundException;
 import com.samueltan.backtest.market.MarketDataService.UnknownSymbolException;
@@ -37,6 +39,18 @@ public class ApiExceptionHandler {
                 .sorted()
                 .collect(Collectors.joining("; "));
         return new ApiError(message.isEmpty() ? "invalid request" : message);
+    }
+
+    @ExceptionHandler(EmailTakenException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public ApiError conflict(EmailTakenException e) {
+        return new ApiError(e.getMessage());
+    }
+
+    @ExceptionHandler(InvalidCredentialsException.class)
+    @ResponseStatus(HttpStatus.UNAUTHORIZED)
+    public ApiError unauthorized(InvalidCredentialsException e) {
+        return new ApiError(e.getMessage());
     }
 
     @ExceptionHandler(JobNotFoundException.class)

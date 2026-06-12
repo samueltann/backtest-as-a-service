@@ -71,7 +71,7 @@ public class BacktestService {
         }
     }
 
-    public JobDetail submit(BacktestRequest request) {
+    public JobDetail submit(BacktestRequest request, Long userId) {
         String symbol = request.symbol().toUpperCase(Locale.ROOT);
         catalog.validateParams(request.strategyId(), request.params());
         marketData.bars(symbol, request.startDate(), request.endDate()); // throws if unknown
@@ -87,6 +87,7 @@ public class BacktestService {
                 request.commissionBps(),
                 request.slippageBps(),
                 request.positionFraction());
+        job.setUserId(userId);
         jobs.save(job);
 
         UUID jobId = job.getId();
@@ -100,9 +101,11 @@ public class BacktestService {
         return toDetail(job, null);
     }
 
+    /** Jobs are scoped to their owner: another user's id behaves like a 404. */
     @Transactional(readOnly = true)
-    public JobDetail get(UUID id) {
-        BacktestJob job = jobs.findById(id).orElseThrow(() -> new JobNotFoundException(id));
+    public JobDetail get(UUID id, Long userId) {
+        BacktestJob job = jobs.findByIdAndUserId(id, userId)
+                .orElseThrow(() -> new JobNotFoundException(id));
         JsonNode resultsNode = results.findByJobId(id)
                 .map(r -> readJson(r.getResultsJson()))
                 .orElse(null);
@@ -110,8 +113,8 @@ public class BacktestService {
     }
 
     @Transactional(readOnly = true)
-    public Page<JobSummary> list(Pageable pageable) {
-        Page<BacktestJob> page = jobs.findAllByOrderByCreatedAtDesc(pageable);
+    public Page<JobSummary> list(Pageable pageable, Long userId) {
+        Page<BacktestJob> page = jobs.findByUserIdOrderByCreatedAtDesc(userId, pageable);
         List<UUID> ids = page.map(BacktestJob::getId).toList();
         Map<UUID, BacktestResult> byJob = results.findByJobIdIn(ids).stream()
                 .collect(Collectors.toMap(BacktestResult::getJobId, Function.identity()));
@@ -119,12 +122,11 @@ public class BacktestService {
     }
 
     @Transactional
-    public void delete(UUID id) {
-        if (!jobs.existsById(id)) {
-            throw new JobNotFoundException(id);
-        }
+    public void delete(UUID id, Long userId) {
+        BacktestJob job = jobs.findByIdAndUserId(id, userId)
+                .orElseThrow(() -> new JobNotFoundException(id));
         results.deleteByJobId(id);
-        jobs.deleteById(id);
+        jobs.delete(job);
     }
 
     private JobSummary toSummary(BacktestJob job, BacktestResult result) {
