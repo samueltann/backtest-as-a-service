@@ -1,0 +1,6 @@
+#FileLock
+#Fri Jun 12 23:11:47 SGT 2026
+server=192.168.1.225\:55572
+hostName=mac.lan
+method=file
+id=19ebc63a115ecea7036fd193fda4bd24a1bb5fc67e7
