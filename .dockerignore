@@ -1,0 +1,7 @@
+.git
+engine/build
+backend/target
+backend/data
+frontend/node_modules
+frontend/dist
+**/.DS_Store
