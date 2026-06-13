@@ -22,18 +22,18 @@ public class BacktestWorker {
     private static final Logger log = LoggerFactory.getLogger(BacktestWorker.class);
 
     private final BacktestJobRepository jobs;
-    private final BacktestResultRepository results;
     private final MarketDataService marketData;
     private final EngineRunner engineRunner;
+    private final JobCompletionService completion;
     private final ObjectMapper mapper;
 
-    public BacktestWorker(BacktestJobRepository jobs, BacktestResultRepository results,
-                          MarketDataService marketData, EngineRunner engineRunner,
+    public BacktestWorker(BacktestJobRepository jobs, MarketDataService marketData,
+                          EngineRunner engineRunner, JobCompletionService completion,
                           ObjectMapper mapper) {
         this.jobs = jobs;
-        this.results = results;
         this.marketData = marketData;
         this.engineRunner = engineRunner;
+        this.completion = completion;
         this.mapper = mapper;
     }
 
@@ -42,25 +42,24 @@ public class BacktestWorker {
         if (job == null) {
             return; // deleted while queued
         }
-        try {
-            job.markRunning();
-            jobs.saveAndFlush(job);
+        job.markRunning();
+        jobs.saveAndFlush(job);
 
+        try {
             Path dataFile = marketData.ensureCsvForEngine(job.getSymbol());
             EngineRunner.EngineResult outcome =
                     engineRunner.run(job.getId().toString(), buildEngineConfig(job, dataFile));
 
             if (outcome.isSuccess()) {
-                saveResult(job, outcome.results());
-                job.markCompleted();
+                // Result row and COMPLETED status committed together.
+                completion.complete(job, outcome.results());
             } else {
-                job.markFailed(outcome.errorMessage());
+                completion.fail(job, outcome.errorMessage());
             }
         } catch (Exception e) {
             log.error("Backtest {} failed unexpectedly", jobId, e);
-            job.markFailed("internal error: " + e.getMessage());
+            completion.fail(job, "internal error: " + e.getMessage());
         }
-        jobs.saveAndFlush(job);
     }
 
     private JsonNode buildEngineConfig(BacktestJob job, Path dataFile) throws Exception {
@@ -79,22 +78,5 @@ public class BacktestWorker {
         config.put("slippage_bps", job.getSlippageBps());
         config.put("position_fraction", job.getPositionFraction());
         return config;
-    }
-
-    private void saveResult(BacktestJob job, JsonNode resultsNode) {
-        JsonNode m = resultsNode.get("metrics");
-        results.save(new BacktestResult(
-                job.getId(),
-                m.get("total_return").asDouble(),
-                m.get("cagr").asDouble(),
-                m.get("sharpe").asDouble(),
-                m.get("sortino").asDouble(),
-                m.get("max_drawdown").asDouble(),
-                m.get("max_drawdown_days").asInt(),
-                m.get("win_rate").asDouble(),
-                m.get("profit_factor").asDouble(),
-                m.get("num_trades").asInt(),
-                m.get("final_equity").asDouble(),
-                resultsNode.toString()));
     }
 }
