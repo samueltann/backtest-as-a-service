@@ -5,6 +5,10 @@ engine/build/
 backend/target/
 *.class
 
+# Runtime data: local H2 database and the engine's per-symbol CSV cache.
+# (Seed market data lives in /data/csv and IS tracked.)
+backend/data/
+
 # Frontend
 frontend/node_modules/
 frontend/dist/
