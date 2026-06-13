@@ -134,6 +134,19 @@ public class MarketDataService {
         }
     }
 
+    /**
+     * Replaces all bars for a symbol in one transaction and invalidates its
+     * engine CSV cache. Callers fetch the new data <em>before</em> calling
+     * this, so no network I/O happens while the DB transaction is open.
+     */
+    @Transactional
+    public void replaceBars(String symbol, List<OhlcvBar> bars) {
+        repository.deleteBySymbol(symbol);
+        repository.flush(); // run the delete before inserting, or the unique (symbol, date) index trips
+        repository.saveAll(bars);
+        invalidateCache(symbol);
+    }
+
     public void invalidateCache(String symbol) {
         try {
             Files.deleteIfExists(Path.of(properties.cacheDir()).resolve(symbol + ".csv"));

@@ -17,7 +17,6 @@ import java.util.Locale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Pulls daily OHLCV history from Yahoo Finance's public chart API and
@@ -32,16 +31,13 @@ public class MarketDataFetchService {
     private static final String URL =
             "https://query1.finance.yahoo.com/v8/finance/chart/%s?range=15y&interval=1d";
 
-    private final OhlcvBarRepository repository;
     private final MarketDataService marketData;
     private final ObjectMapper mapper;
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-    public MarketDataFetchService(OhlcvBarRepository repository, MarketDataService marketData,
-                                  ObjectMapper mapper) {
-        this.repository = repository;
+    public MarketDataFetchService(MarketDataService marketData, ObjectMapper mapper) {
         this.marketData = marketData;
         this.mapper = mapper;
     }
@@ -49,22 +45,20 @@ public class MarketDataFetchService {
     public record RefreshOutcome(String symbol, int bars) {
     }
 
-    @Transactional
     public RefreshOutcome refresh(String rawSymbol) {
         String symbol = rawSymbol.strip().toUpperCase(Locale.ROOT);
         if (!symbol.matches("[A-Z0-9.\\-]{1,10}")) {
             throw new IllegalArgumentException("invalid symbol: " + rawSymbol);
         }
 
+        // Fetch outside any transaction — this is a slow network call and must
+        // not hold a pooled DB connection open. Persist only once we have data.
         List<OhlcvBar> bars = fetch(symbol);
         if (bars.isEmpty()) {
             throw new IllegalArgumentException("no data returned for symbol: " + symbol);
         }
 
-        repository.deleteBySymbol(symbol);
-        repository.flush(); // execute the delete before inserting, or the unique (symbol, date) index trips
-        repository.saveAll(bars);
-        marketData.invalidateCache(symbol);
+        marketData.replaceBars(symbol, bars);
         log.info("Refreshed {}: {} bars", symbol, bars.size());
         return new RefreshOutcome(symbol, bars.size());
     }
