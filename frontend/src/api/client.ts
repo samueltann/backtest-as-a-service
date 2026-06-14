@@ -32,6 +32,15 @@ export class ApiError extends Error {
   }
 }
 
+// Notified when a request is rejected for auth reasons (expired/invalid token),
+// so the React tree can drop to logged-out state instead of looping on 403s.
+// AuthContext registers a handler; default is a no-op before it mounts.
+let unauthorizedHandler: () => void = () => {}
+
+export function setUnauthorizedHandler(handler: () => void) {
+  unauthorizedHandler = handler
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -49,7 +58,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     } catch {
       /* non-JSON error body */
     }
-    if (response.status === 401 || response.status === 403) tokenStore.clear()
+    if (response.status === 401 || response.status === 403) {
+      tokenStore.clear()
+      unauthorizedHandler()
+    }
     throw new ApiError(message, response.status)
   }
   if (response.status === 204) return undefined as T
