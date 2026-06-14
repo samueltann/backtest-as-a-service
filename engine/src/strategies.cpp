@@ -81,14 +81,11 @@ public:
         stddev_.update(e.bar.close);
         if (!sma_.ready()) return std::nullopt;
         double lower = sma_.value() - num_std_ * stddev_.value();
-        if (!in_position_ && e.bar.close < lower) {
-            in_position_ = true;
-            return transition_to(true, e.bar.date);
-        }
-        if (in_position_ && e.bar.close >= sma_.value()) {
-            in_position_ = false;
-            return transition_to(false, e.bar.date);
-        }
+        // Enter below the lower band, exit on reversion to the mean. The base
+        // class's transition_to is the single source of position state and
+        // dedupes repeat signals, so no separate in_position_ flag is needed.
+        if (e.bar.close < lower) return transition_to(true, e.bar.date);
+        if (e.bar.close >= sma_.value()) return transition_to(false, e.bar.date);
         return std::nullopt;
     }
 
@@ -96,7 +93,6 @@ private:
     Sma sma_;
     RollingStdDev stddev_;
     double num_std_;
-    bool in_position_ = false;
 };
 
 // Mean reversion on RSI: buy oversold, exit overbought.

@@ -104,6 +104,38 @@ TEST_CASE("SMA crossover round trip with hand-computed fills and PnL") {
     std::remove(csv.c_str());
 }
 
+TEST_CASE("Bollinger mean reversion enters below the band and exits at the mean") {
+    // period=5, num_std=1. After bar 6 the window is [100,100,100,100,88]:
+    // SMA 97.6, stddev 4.8, lower band 92.8 — close 88 breaches it, so enter
+    // (fills bar 7 open). At bar 7 close 100 >= SMA 97.6, so exit (fills bar 8
+    // open). Sizing uses the signal-bar close (88 -> 113 shares) but the fill
+    // clamps to the 100 shares cash covers at the open price of 100.
+    std::vector<std::pair<std::string, std::pair<double, double>>> bars;
+    std::vector<double> prices = {100, 100, 100, 100, 100, 88, 100, 105};
+    for (std::size_t i = 0; i < prices.size(); ++i) {
+        char date[11];
+        std::snprintf(date, sizeof date, "2024-01-%02zu", i + 1);
+        bars.push_back({date, {prices[i], prices[i]}});
+    }
+    auto csv = write_csv("bt_test_bollinger.csv", bars);
+
+    auto config = base_config(csv);
+    config.strategy_id = "bollinger_meanrev";
+    config.strategy_params = {{"period", 5}, {"num_std", 1.0}};
+
+    json results = run_backtest(config);
+    const auto& trades = results["trades"];
+
+    REQUIRE(trades.size() == 1);
+    REQUIRE(trades[0]["entry_date"] == "2024-01-07");
+    REQUIRE(trades[0]["exit_date"] == "2024-01-08");
+    REQUIRE(trades[0]["quantity"].get<long>() == 100);
+    REQUIRE(trades[0]["entry_price"].get<double>() == Approx(100.0));
+    REQUIRE(trades[0]["exit_price"].get<double>() == Approx(105.0));
+    REQUIRE(trades[0]["pnl"].get<double>() == Approx(500.0));
+    std::remove(csv.c_str());
+}
+
 TEST_CASE("execution applies slippage against the trader and bps commission") {
     SimulatedExecutionHandler exec(/*commission_bps=*/50.0, /*slippage_bps=*/10.0);
     exec.on_order(OrderEvent{"2024-01-01", OrderSide::Buy, 100});
