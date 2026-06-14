@@ -37,7 +37,7 @@ jobs:
         run: ./mvnw -B test
 
   frontend:
-    name: React frontend (typecheck + build)
+    name: React frontend (typecheck + test + build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,10 +49,11 @@ jobs:
       - name: Install
         working-directory: frontend
         run: npm ci
-      - name: Typecheck and build
+      - name: Typecheck, test, and build
         working-directory: frontend
         run: |
           npx tsc -b
+          npm test
           npm run build
 
   docker:
