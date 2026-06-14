@@ -5,10 +5,12 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +32,10 @@ public class MarketDataService {
     private final OhlcvBarRepository repository;
     private final JdbcTemplate jdbc;
     private final EngineProperties properties;
+
+    // One lock per symbol so concurrent workers don't redundantly rebuild — or
+    // worse, interleave writes into — the same cache file.
+    private final ConcurrentHashMap<String, Object> symbolLocks = new ConcurrentHashMap<>();
 
     public MarketDataService(OhlcvBarRepository repository, JdbcTemplate jdbc,
                              EngineProperties properties) {
@@ -93,6 +99,17 @@ public class MarketDataService {
         if (Files.exists(file)) {
             return file;
         }
+        // Build under a per-symbol lock so only one worker writes; the others
+        // block then reuse the finished file (double-checked inside the lock).
+        synchronized (symbolLocks.computeIfAbsent(symbol, k -> new Object())) {
+            if (!Files.exists(file)) {
+                writeCacheFile(symbol, cacheDir, file);
+            }
+        }
+        return file;
+    }
+
+    private void writeCacheFile(String symbol, Path cacheDir, Path file) {
         try {
             Files.createDirectories(cacheDir);
             List<String> lines = new ArrayList<>();
@@ -102,11 +119,32 @@ public class MarketDataService {
                         bar.getDate(), bar.getOpen(), bar.getHigh(),
                         bar.getLow(), bar.getClose(), bar.getVolume()));
             }
-            Files.write(file, lines);
+            // Write to a temp file in the same directory, then publish atomically
+            // so the engine subprocess never reads a half-written file.
+            Path tmp = Files.createTempFile(cacheDir, symbol + "-", ".csv.tmp");
+            try {
+                Files.write(tmp, lines);
+                Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } finally {
+                Files.deleteIfExists(tmp);
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-        return file;
+    }
+
+    /**
+     * Replaces all bars for a symbol in one transaction and invalidates its
+     * engine CSV cache. Callers fetch the new data <em>before</em> calling
+     * this, so no network I/O happens while the DB transaction is open.
+     */
+    @Transactional
+    public void replaceBars(String symbol, List<OhlcvBar> bars) {
+        repository.deleteBySymbol(symbol);
+        repository.flush(); // run the delete before inserting, or the unique (symbol, date) index trips
+        repository.saveAll(bars);
+        invalidateCache(symbol);
     }
 
     public void invalidateCache(String symbol) {
