@@ -44,27 +44,30 @@ public class EngineRunner {
             Path workDir = Files.createDirectories(Path.of(properties.workDir()).resolve(jobId));
             Path configFile = workDir.resolve("config.json");
             Path resultsFile = workDir.resolve("results.json");
+            Path stderrFile = workDir.resolve("stderr.log");
             mapper.writerWithDefaultPrettyPrinter().writeValue(configFile.toFile(), config);
 
+            // Redirect stderr to a file rather than draining the pipe ourselves:
+            // a child that fills the OS pipe buffer before we read would block,
+            // and reading only after waitFor() would deadlock. The file also
+            // stays in the work dir next to config.json/results.json for debugging.
             Process process = new ProcessBuilder(
                     Path.of(properties.binaryPath()).toAbsolutePath().toString(),
                     "--config", configFile.toString(),
                     "--output", resultsFile.toString())
                     .directory(workDir.toFile())
+                    .redirectError(stderrFile.toFile())
                     .start();
 
-            String stderr;
-            try (var err = process.getErrorStream()) {
-                if (!process.waitFor(properties.timeoutSeconds(), TimeUnit.SECONDS)) {
-                    process.destroyForcibly();
-                    log.warn("Engine timed out for job {}", jobId);
-                    return new EngineResult(null,
-                            "engine timed out after " + properties.timeoutSeconds() + "s");
-                }
-                stderr = new String(err.readAllBytes());
+            if (!process.waitFor(properties.timeoutSeconds(), TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                log.warn("Engine timed out for job {}", jobId);
+                return new EngineResult(null,
+                        "engine timed out after " + properties.timeoutSeconds() + "s");
             }
 
             if (process.exitValue() != 0) {
+                String stderr = Files.exists(stderrFile) ? Files.readString(stderrFile) : "";
                 return new EngineResult(null, parseEngineError(stderr, process.exitValue()));
             }
             return new EngineResult(mapper.readTree(resultsFile.toFile()), null);
