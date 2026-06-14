@@ -121,6 +121,27 @@ class BacktestFlowIntegrationTest {
     }
 
     @Test
+    void engineFailureSurfacesAsFailedJobWithMessage() {
+        // A valid symbol but a date range with no data passes request validation,
+        // then the engine exits non-zero; the worker must surface its stderr
+        // error and mark the job FAILED (exercises the stderr-from-file path).
+        ResponseEntity<JsonNode> submitted = post("/api/backtests",
+                Map.of("strategyId", "buy_hold",
+                        "params", Map.of(),
+                        "symbol", "AAPL",
+                        "startDate", "1990-01-01",
+                        "endDate", "1991-01-01",
+                        "initialCapital", 100000),
+                token);
+        assertThat(submitted.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+
+        JsonNode job = awaitCompletion(submitted.getBody().get("id").asText(), token);
+        assertThat(job.get("status").asText()).isEqualTo("FAILED");
+        assertThat(job.get("errorMessage").asText()).contains("no bars in range");
+        assertThat(job.get("results").isNull()).isTrue();
+    }
+
+    @Test
     void deletedJobIsGone() {
         String id = runToCompletion().get("id").asText();
         exchange("/api/backtests/" + id, HttpMethod.DELETE, null, token);

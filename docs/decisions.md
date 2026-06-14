@@ -36,7 +36,7 @@ Bars live in one table with a unique `(symbol, date)` index; the engine delibera
 
 ## Key metrics are columns; the full result is a JSON blob
 
-Job lists and comparisons need `sharpe`, `total_return`, etc. for every row — those are real columns. The equity curve and trade log (hundreds of KB) are needed only when viewing one result — those stay as a JSON document in a single column. Relational where queried, document where not.
+Job lists and comparisons need `sharpe`, `total_return`, etc. for every row — those are real columns. The equity curve and trade log (hundreds of KB) are needed only when viewing one result — those stay as a JSON document serialized into a single CLOB/TEXT column (`@Lob String`), not a native `jsonb` type: the app never queries *into* that document, so a portable large-text column works on both H2 (dev) and Postgres (prod) with no dialect-specific mapping. Relational where queried, opaque document where not.
 
 ## Stateless JWT auth
 
