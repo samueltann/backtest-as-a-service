@@ -34,7 +34,7 @@
 
 1. `POST /api/backtests` — request is validated (Bean Validation for shape, the strategy catalog for params, the bars table for the symbol), persisted as a `BacktestJob` in state `QUEUED`, and handed to the executor. The response is `202` with the job id.
 2. A worker picks it up: state → `RUNNING`, the symbol's CSV cache is exported from the DB if missing, a `config.json` is written to a per-job work directory, and the engine binary is spawned with a 60 s hard timeout.
-3. Engine exit 0: `results.json` is parsed; headline metrics land in `backtest_results` columns, the full document (equity curve + trades) in a JSON column; state → `COMPLETED`. Exit ≠ 0 or timeout: the engine's stderr JSON (`{"error": ...}`) becomes the job's `errorMessage`; state → `FAILED`.
+3. Engine exit 0: `results.json` is parsed; headline metrics land in `backtest_results` columns, the full document (equity curve + trades) in a CLOB/TEXT column; state → `COMPLETED`. Exit ≠ 0 or timeout: the engine's stderr JSON (`{"error": ...}`) becomes the job's `errorMessage`; state → `FAILED`.
 4. The frontend polls `GET /api/backtests/{id}` (1 s) until the state is terminal. The work directory keeps the exact config for reproducibility.
 
 On startup, jobs found `QUEUED`/`RUNNING` are marked `FAILED` ("server restarted") since the queue is in-memory.
