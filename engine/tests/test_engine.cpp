@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "bt/data_handler.hpp"
+#include "bt/date.hpp"
 #include "bt/engine.hpp"
 #include "bt/execution.hpp"
 #include "bt/strategy.hpp"
@@ -35,8 +36,8 @@ Config base_config(const std::string& data_file) {
     Config c;
     c.symbol = "TEST";
     c.data_file = data_file;
-    c.start_date = "2024-01-01";
-    c.end_date = "2024-12-31";
+    c.start_date = Date::parse("2024-01-01");
+    c.end_date = Date::parse("2024-12-31");
     c.initial_capital = 10000.0;
     c.commission_bps = 0.0;
     c.slippage_bps = 0.0;
@@ -138,18 +139,19 @@ TEST_CASE("Bollinger mean reversion enters below the band and exits at the mean"
 
 TEST_CASE("execution applies slippage against the trader and bps commission") {
     SimulatedExecutionHandler exec(/*commission_bps=*/50.0, /*slippage_bps=*/10.0);
-    exec.on_order(OrderEvent{"2024-01-01", OrderSide::Buy, 100});
+    exec.on_order(OrderEvent{Date::parse("2024-01-01"), OrderSide::Buy, 100, "AAA"});
 
-    Bar bar{"2024-01-02", 50.0, 51.0, 49.0, 50.5, 0.0};
-    auto fills = exec.on_new_bar(bar);
+    Bar bar{Date::parse("2024-01-02"), 50.0, 51.0, 49.0, 50.5, 0.0, "AAA"};
+    auto fills = exec.on_new_bar("AAA", bar);
 
     REQUIRE(fills.size() == 1);
+    REQUIRE(fills[0].symbol == "AAA");
     REQUIRE(fills[0].price == Approx(50.0 * 1.001));                  // pay up on buys
     REQUIRE(fills[0].commission == Approx(0.005 * 100 * 50.0 * 1.001));
     REQUIRE_FALSE(exec.has_pending());
 
-    exec.on_order(OrderEvent{"2024-01-02", OrderSide::Sell, 100});
-    auto sell_fills = exec.on_new_bar(bar);
+    exec.on_order(OrderEvent{Date::parse("2024-01-02"), OrderSide::Sell, 100, "AAA"});
+    auto sell_fills = exec.on_new_bar("AAA", bar);
     REQUIRE(sell_fills[0].price == Approx(50.0 * 0.999));             // receive less on sells
 }
 
@@ -166,8 +168,8 @@ TEST_CASE("invalid configs and data produce clear EngineError messages") {
         auto csv = write_csv("bt_test_range.csv", {{"2024-06-01", {10.0, 10.0}}});
         auto config = base_config(csv);
         config.strategy_id = "buy_hold";
-        config.start_date = "2020-01-01";
-        config.end_date = "2020-12-31";
+        config.start_date = Date::parse("2020-01-01");
+        config.end_date = Date::parse("2020-12-31");
         REQUIRE_THROWS_AS(CsvDataHandler(csv, config.start_date, config.end_date), EngineError);
         std::remove(csv.c_str());
     }

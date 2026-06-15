@@ -31,6 +31,7 @@ add_executable(bt_tests
   tests/test_indicators.cpp
   tests/test_engine.cpp
   tests/test_metrics.cpp
+  tests/test_multi_symbol.cpp
 )
 target_link_libraries(bt_tests PRIVATE bt_core catch2)
 add_test(NAME bt_tests COMMAND bt_tests)
