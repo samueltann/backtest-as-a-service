@@ -9,17 +9,38 @@ Portfolio::Portfolio(double initial_capital, double position_fraction)
       position_fraction_(position_fraction),
       cash_(initial_capital) {}
 
-std::optional<OrderEvent> Portfolio::on_signal(const SignalEvent& signal) {
-    if (signal.type == SignalType::Long) {
-        if (position_ > 0 || last_close_ <= 0.0) return std::nullopt;
-        double equity = cash_ + position_ * last_close_;
-        long qty = static_cast<long>(std::floor(equity * position_fraction_ / last_close_));
-        if (qty <= 0) return std::nullopt;
-        return OrderEvent{signal.date, OrderSide::Buy, qty};
+long Portfolio::position(const std::string& symbol) const {
+    auto it = positions_.find(symbol);
+    return it == positions_.end() ? 0 : it->second;
+}
+
+double Portfolio::total_equity() const {
+    double equity = cash_;
+    for (const auto& [symbol, qty] : positions_) {
+        auto it = last_close_.find(symbol);
+        if (it != last_close_.end()) equity += qty * it->second;
     }
-    // Exit: close the whole position.
-    if (position_ <= 0) return std::nullopt;
-    return OrderEvent{signal.date, OrderSide::Sell, position_};
+    return equity;
+}
+
+std::optional<OrderEvent> Portfolio::on_signal(const SignalEvent& signal) {
+    long pos = position(signal.symbol);
+    auto close_it = last_close_.find(signal.symbol);
+    double last_close = close_it == last_close_.end() ? 0.0 : close_it->second;
+
+    if (signal.type == SignalType::Long) {
+        if (pos > 0 || last_close <= 0.0) return std::nullopt;
+        // Size against current total equity; concurrent longs are clamped to
+        // available cash at fill time (see on_fill), so the order they fill in
+        // matters — the engine processes signals in a deterministic symbol order.
+        double equity = total_equity();
+        long qty = static_cast<long>(std::floor(equity * position_fraction_ / last_close));
+        if (qty <= 0) return std::nullopt;
+        return OrderEvent{signal.date, OrderSide::Buy, qty, signal.symbol};
+    }
+    // Exit: close the whole position in this symbol.
+    if (pos <= 0) return std::nullopt;
+    return OrderEvent{signal.date, OrderSide::Sell, pos, signal.symbol};
 }
 
 void Portfolio::on_fill(const FillEvent& fill) {
@@ -40,32 +61,33 @@ void Portfolio::on_fill(const FillEvent& fill) {
 
         double cost = qty * cost_per_share;
         cash_ -= cost;
-        position_ += qty;
-        open_entry_date_ = fill.date;
-        open_entry_cost_ = cost;
-        open_entry_qty_ = qty;
+        positions_[fill.symbol] += qty;
+        open_[fill.symbol] = OpenLot{fill.date, cost, qty};
     } else {
         double proceeds = fill.quantity * fill.price - fill.commission;
         cash_ += proceeds;
-        position_ -= fill.quantity;
-        if (position_ == 0 && open_entry_qty_ > 0) {
+        long& pos = positions_[fill.symbol];
+        pos -= fill.quantity;
+        auto open_it = open_.find(fill.symbol);
+        if (pos == 0 && open_it != open_.end() && open_it->second.qty > 0) {
+            const OpenLot& lot = open_it->second;
             Trade t;
-            t.entry_date = open_entry_date_;
+            t.symbol = fill.symbol;
+            t.entry_date = lot.entry_date;
             t.exit_date = fill.date;
-            t.quantity = open_entry_qty_;
-            t.entry_price = open_entry_cost_ / open_entry_qty_;
+            t.quantity = lot.qty;
+            t.entry_price = lot.cost / lot.qty;
             t.exit_price = proceeds / fill.quantity;
-            t.pnl = proceeds - open_entry_cost_;
-            t.return_pct = open_entry_cost_ > 0.0 ? t.pnl / open_entry_cost_ : 0.0;
+            t.pnl = proceeds - lot.cost;
+            t.return_pct = lot.cost > 0.0 ? t.pnl / lot.cost : 0.0;
             trades_.push_back(t);
-            open_entry_qty_ = 0;
+            open_.erase(open_it);
         }
     }
 }
 
-void Portfolio::mark_to_market(const Bar& bar) {
-    last_close_ = bar.close;
-    equity_curve_.push_back({bar.date, cash_ + position_ * bar.close});
+void Portfolio::mark_to_market(const std::string& date) {
+    equity_curve_.push_back({date, total_equity()});
 }
 
 }  // namespace bt

@@ -1,7 +1,11 @@
 #include "bt/strategy.hpp"
 
-#include <functional>
-#include <map>
+#include <algorithm>
+#include <cstddef>
+#include <deque>
+#include <set>
+#include <utility>
+#include <vector>
 
 #include "bt/data_handler.hpp"
 #include "bt/indicators.hpp"
@@ -33,20 +37,20 @@ double require_num(const json& params, const std::string& key, double min_val, d
     return v;
 }
 
-// --- strategies --------------------------------------------------------------
+// --- single-symbol strategies ------------------------------------------------
 
 // Long when the fast SMA is above the slow SMA, flat otherwise.
-class SmaCrossover final : public Strategy {
+class SmaCrossover final : public SingleSymbolStrategy {
 public:
     SmaCrossover(int fast, int slow) : fast_(fast), slow_(slow) {
         if (fast >= slow) throw EngineError("fast_period must be < slow_period");
     }
 
-    std::optional<SignalEvent> on_market(const MarketEvent& e) override {
-        fast_.update(e.bar.close);
-        slow_.update(e.bar.close);
+    std::optional<SignalEvent> on_bar(const Bar& bar) override {
+        fast_.update(bar.close);
+        slow_.update(bar.close);
         if (!slow_.ready()) return std::nullopt;
-        return transition_to(fast_.value() > slow_.value(), e.bar.date);
+        return transition_to(fast_.value() > slow_.value(), bar);
     }
 
 private:
@@ -55,14 +59,14 @@ private:
 };
 
 // Trend-following: long while the close is above its EMA.
-class EmaMomentum final : public Strategy {
+class EmaMomentum final : public SingleSymbolStrategy {
 public:
     explicit EmaMomentum(int period) : ema_(period) {}
 
-    std::optional<SignalEvent> on_market(const MarketEvent& e) override {
-        ema_.update(e.bar.close);
+    std::optional<SignalEvent> on_bar(const Bar& bar) override {
+        ema_.update(bar.close);
         if (!ema_.ready()) return std::nullopt;
-        return transition_to(e.bar.close > ema_.value(), e.bar.date);
+        return transition_to(bar.close > ema_.value(), bar);
     }
 
 private:
@@ -71,21 +75,21 @@ private:
 
 // Mean reversion: buy when the close drops below the lower Bollinger band,
 // exit when it reverts back up to the middle band (the SMA).
-class BollingerMeanReversion final : public Strategy {
+class BollingerMeanReversion final : public SingleSymbolStrategy {
 public:
     BollingerMeanReversion(int period, double num_std)
         : sma_(period), stddev_(period), num_std_(num_std) {}
 
-    std::optional<SignalEvent> on_market(const MarketEvent& e) override {
-        sma_.update(e.bar.close);
-        stddev_.update(e.bar.close);
+    std::optional<SignalEvent> on_bar(const Bar& bar) override {
+        sma_.update(bar.close);
+        stddev_.update(bar.close);
         if (!sma_.ready()) return std::nullopt;
         double lower = sma_.value() - num_std_ * stddev_.value();
         // Enter below the lower band, exit on reversion to the mean. The base
         // class's transition_to is the single source of position state and
         // dedupes repeat signals, so no separate in_position_ flag is needed.
-        if (e.bar.close < lower) return transition_to(true, e.bar.date);
-        if (e.bar.close >= sma_.value()) return transition_to(false, e.bar.date);
+        if (bar.close < lower) return transition_to(true, bar);
+        if (bar.close >= sma_.value()) return transition_to(false, bar);
         return std::nullopt;
     }
 
@@ -96,18 +100,18 @@ private:
 };
 
 // Mean reversion on RSI: buy oversold, exit overbought.
-class RsiReversion final : public Strategy {
+class RsiReversion final : public SingleSymbolStrategy {
 public:
     RsiReversion(int period, double oversold, double overbought)
         : rsi_(period), oversold_(oversold), overbought_(overbought) {
         if (oversold >= overbought) throw EngineError("oversold must be < overbought");
     }
 
-    std::optional<SignalEvent> on_market(const MarketEvent& e) override {
-        rsi_.update(e.bar.close);
+    std::optional<SignalEvent> on_bar(const Bar& bar) override {
+        rsi_.update(bar.close);
         if (!rsi_.ready()) return std::nullopt;
-        if (rsi_.value() < oversold_) return transition_to(true, e.bar.date);
-        if (rsi_.value() > overbought_) return transition_to(false, e.bar.date);
+        if (rsi_.value() < oversold_) return transition_to(true, bar);
+        if (rsi_.value() > overbought_) return transition_to(false, bar);
         return std::nullopt;
     }
 
@@ -118,16 +122,82 @@ private:
 };
 
 // Benchmark: buy on the first bar and hold to the end.
-class BuyAndHold final : public Strategy {
+class BuyAndHold final : public SingleSymbolStrategy {
 public:
-    std::optional<SignalEvent> on_market(const MarketEvent& e) override {
-        return transition_to(true, e.bar.date);
+    std::optional<SignalEvent> on_bar(const Bar& bar) override {
+        return transition_to(true, bar);
     }
+};
+
+// --- cross-sectional strategies ----------------------------------------------
+
+// Long-only cross-sectional momentum. Each bar, rank every symbol by its trailing
+// return over `lookback` bars and hold the `top_k` names with positive momentum,
+// equal-weight. A symbol's decision depends on the others, which is exactly the
+// capability the time-slice interface exists to provide.
+class XsMomentum final : public Strategy {
+public:
+    XsMomentum(int lookback, int top_k) : lookback_(lookback), top_k_(top_k) {}
+
+    std::vector<SignalEvent> on_slice(const TimeSlice& slice) override {
+        const auto window = static_cast<std::size_t>(lookback_) + 1;
+
+        // Update each present symbol's rolling close history.
+        for (const auto& [symbol, bar] : slice.bars) {
+            auto& hist = closes_[symbol];
+            hist.push_back(bar.close);
+            if (hist.size() > window) hist.pop_front();
+        }
+
+        // Rank symbols present today that have a full window and positive momentum.
+        std::vector<std::pair<double, std::string>> ranked;  // (momentum, symbol)
+        for (const auto& [symbol, bar] : slice.bars) {
+            (void)bar;
+            const auto& hist = closes_[symbol];
+            if (hist.size() < window) continue;
+            double past = hist.front();
+            if (past <= 0.0) continue;
+            double momentum = hist.back() / past - 1.0;
+            if (momentum > 0.0) ranked.push_back({momentum, symbol});
+        }
+        // Highest momentum first; tie-break on symbol so the selection is stable.
+        std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b) {
+            if (a.first != b.first) return a.first > b.first;
+            return a.second < b.second;
+        });
+
+        std::set<std::string> target;
+        for (std::size_t i = 0; i < ranked.size() && i < static_cast<std::size_t>(top_k_); ++i)
+            target.insert(ranked[i].second);
+
+        // Emit Long for symbols entering the target set and Exit for those leaving
+        // it. Walk the union of currently-held and target symbols in sorted order
+        // so the signal stream (and thus cash-clamped sizing) is deterministic.
+        std::set<std::string> universe = target;
+        for (const auto& [symbol, held] : held_)
+            if (held) universe.insert(symbol);
+
+        std::vector<SignalEvent> out;
+        for (const auto& symbol : universe) {
+            bool want = target.count(symbol) > 0;
+            if (want == held_[symbol]) continue;
+            held_[symbol] = want;
+            out.push_back(SignalEvent{slice.date, want ? SignalType::Long : SignalType::Exit, symbol});
+        }
+        return out;
+    }
+
+private:
+    int lookback_;
+    int top_k_;
+    std::map<std::string, std::deque<double>> closes_;
+    std::map<std::string, bool> held_;
 };
 
 }  // namespace
 
-std::unique_ptr<Strategy> make_strategy(const std::string& id, const json& params) {
+std::unique_ptr<SingleSymbolStrategy> make_single_symbol_strategy(const std::string& id,
+                                                                  const json& params) {
     if (id == "sma_crossover") {
         int fast = require_int(params, "fast_period", 2, 500);
         int slow = require_int(params, "slow_period", 3, 1000);
@@ -151,6 +221,21 @@ std::unique_ptr<Strategy> make_strategy(const std::string& id, const json& param
         return std::make_unique<BuyAndHold>();
     }
     throw EngineError("unknown strategy: " + id);
+}
+
+std::unique_ptr<Strategy> make_strategy(const std::string& id, const json& params) {
+    // Native cross-sectional strategies see the whole universe at once.
+    if (id == "xs_momentum") {
+        int lookback = require_int(params, "lookback", 2, 500);
+        int top_k = require_int(params, "top_k", 1, 50);
+        return std::make_unique<XsMomentum>(lookback, top_k);
+    }
+    // Single-symbol strategies run across the basket, one instance per symbol.
+    // Validate params eagerly (this throws on bad input) before the run starts,
+    // then hand the factory to the basket.
+    make_single_symbol_strategy(id, params);
+    return std::make_unique<BasketStrategy>(
+        [id, params] { return make_single_symbol_strategy(id, params); });
 }
 
 json strategy_catalog() {
@@ -188,6 +273,12 @@ json strategy_catalog() {
          {"name", "Buy & Hold"},
          {"description", "Buy on the first bar and hold. Benchmark strategy."},
          {"params", json::array()}},
+        {{"id", "xs_momentum"},
+         {"name", "Cross-Sectional Momentum"},
+         {"description", "Multi-symbol: each bar, rank the universe by trailing return and hold the top-k "
+                         "names with positive momentum, equal-weight. Needs more than one symbol."},
+         {"params", json::array({int_param("lookback", "Lookback (bars)", 60, 2, 500),
+                                 int_param("top_k", "Number to hold", 3, 1, 50)})}},
     });
 }
 

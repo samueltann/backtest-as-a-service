@@ -138,18 +138,19 @@ TEST_CASE("Bollinger mean reversion enters below the band and exits at the mean"
 
 TEST_CASE("execution applies slippage against the trader and bps commission") {
     SimulatedExecutionHandler exec(/*commission_bps=*/50.0, /*slippage_bps=*/10.0);
-    exec.on_order(OrderEvent{"2024-01-01", OrderSide::Buy, 100});
+    exec.on_order(OrderEvent{"2024-01-01", OrderSide::Buy, 100, "AAA"});
 
-    Bar bar{"2024-01-02", 50.0, 51.0, 49.0, 50.5, 0.0};
-    auto fills = exec.on_new_bar(bar);
+    Bar bar{"2024-01-02", 50.0, 51.0, 49.0, 50.5, 0.0, "AAA"};
+    auto fills = exec.on_new_bar("AAA", bar);
 
     REQUIRE(fills.size() == 1);
+    REQUIRE(fills[0].symbol == "AAA");
     REQUIRE(fills[0].price == Approx(50.0 * 1.001));                  // pay up on buys
     REQUIRE(fills[0].commission == Approx(0.005 * 100 * 50.0 * 1.001));
     REQUIRE_FALSE(exec.has_pending());
 
-    exec.on_order(OrderEvent{"2024-01-02", OrderSide::Sell, 100});
-    auto sell_fills = exec.on_new_bar(bar);
+    exec.on_order(OrderEvent{"2024-01-02", OrderSide::Sell, 100, "AAA"});
+    auto sell_fills = exec.on_new_bar("AAA", bar);
     REQUIRE(sell_fills[0].price == Approx(50.0 * 0.999));             // receive less on sells
 }
 

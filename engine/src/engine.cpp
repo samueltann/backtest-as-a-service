@@ -1,5 +1,8 @@
 #include "bt/engine.hpp"
 
+#include <utility>
+#include <vector>
+
 #include "bt/data_handler.hpp"
 #include "bt/execution.hpp"
 #include "bt/metrics.hpp"
@@ -32,8 +35,19 @@ Config Config::from_json(const json& j) {
     try {
         c.strategy_id = j.at("strategy").at("id").get<std::string>();
         c.strategy_params = j.at("strategy").value("params", json::object());
-        c.symbol = j.at("symbol").get<std::string>();
-        c.data_file = j.at("data_file").get<std::string>();
+
+        if (j.contains("symbols")) {
+            // Multi-symbol form: [{"symbol": "...", "data_file": "..."}, ...].
+            for (const auto& entry : j.at("symbols"))
+                c.universe.emplace_back(entry.at("symbol").get<std::string>(),
+                                        entry.at("data_file").get<std::string>());
+        } else {
+            // Legacy single-symbol form.
+            c.symbol = j.at("symbol").get<std::string>();
+            c.data_file = j.at("data_file").get<std::string>();
+            c.universe.emplace_back(c.symbol, c.data_file);
+        }
+
         c.start_date = j.at("start_date").get<std::string>();
         c.end_date = j.at("end_date").get<std::string>();
         c.initial_capital = j.value("initial_capital", 100000.0);
@@ -44,6 +58,7 @@ Config Config::from_json(const json& j) {
         throw EngineError(std::string("invalid config: ") + e.what());
     }
 
+    if (c.universe.empty()) throw EngineError("config must list at least one symbol");
     validate_date(c.start_date, "start_date");
     validate_date(c.end_date, "end_date");
     if (c.start_date >= c.end_date) throw EngineError("start_date must be before end_date");
@@ -56,22 +71,32 @@ Config Config::from_json(const json& j) {
 }
 
 json run_backtest(const Config& config) {
-    CsvDataHandler data(config.data_file, config.start_date, config.end_date);
+    // Effective universe: prefer the explicit list; fall back to the legacy
+    // scalar symbol/data_file (used by direct-construction callers and tests).
+    std::vector<std::pair<std::string, std::string>> universe = config.universe;
+    if (universe.empty() && !config.symbol.empty())
+        universe.emplace_back(config.symbol, config.data_file);
+    if (universe.empty()) throw EngineError("config must list at least one symbol");
+
+    MultiCsvDataHandler data(universe, config.start_date, config.end_date);
     auto strategy = make_strategy(config.strategy_id, config.strategy_params);
     Portfolio portfolio(config.initial_capital, config.position_fraction);
     SimulatedExecutionHandler execution(config.commission_bps, config.slippage_bps);
     EventQueue queue;
 
-    // Event loop. Per bar:
-    //   1. Orders queued on the previous bar fill at this bar's open.
-    //   2. The strategy sees the new bar (MarketEvent) and may emit a signal,
-    //      which chains Signal -> Order inside the queue; the order waits for
-    //      the NEXT bar's open.
-    //   3. Equity is recorded at this bar's close.
-    while (auto bar = data.next()) {
-        portfolio.update_price(*bar);
-        for (auto& fill : execution.on_new_bar(*bar)) queue.push(fill);
-        queue.push(MarketEvent{*bar});
+    // Event loop. Per time slice (one date across the universe):
+    //   1. Orders queued on each symbol's previous bar fill at this bar's open,
+    //      and the latest close is recorded for sizing/mark-to-market.
+    //   2. The strategy sees the whole slice (MarketEvent) and may emit signals,
+    //      which chain Signal -> Order inside the queue; orders wait for the NEXT
+    //      bar's open of their symbol.
+    //   3. Combined equity is recorded at this slice's close.
+    while (auto slice = data.next_slice()) {
+        for (const auto& [symbol, bar] : slice->bars) {
+            for (auto& fill : execution.on_new_bar(symbol, bar)) queue.push(fill);
+            portfolio.update_price(bar);
+        }
+        queue.push(MarketEvent{*slice});
 
         while (!queue.empty()) {
             Event event = std::move(queue.front());
@@ -79,7 +104,7 @@ json run_backtest(const Config& config) {
             std::visit(
                 overloaded{
                     [&](const MarketEvent& e) {
-                        if (auto signal = strategy->on_market(e)) queue.push(*signal);
+                        for (auto& signal : strategy->on_slice(e.slice)) queue.push(signal);
                     },
                     [&](const SignalEvent& e) {
                         if (auto order = portfolio.on_signal(e)) queue.push(*order);
@@ -90,7 +115,7 @@ json run_backtest(const Config& config) {
                 event);
         }
 
-        portfolio.mark_to_market(*bar);
+        portfolio.mark_to_market(slice->date);
     }
 
     Metrics metrics =
@@ -102,7 +127,8 @@ json run_backtest(const Config& config) {
 
     json trades = json::array();
     for (const auto& t : portfolio.trades()) {
-        trades.push_back({{"entry_date", t.entry_date},
+        trades.push_back({{"symbol", t.symbol},
+                          {"entry_date", t.entry_date},
                           {"exit_date", t.exit_date},
                           {"quantity", t.quantity},
                           {"entry_price", t.entry_price},
@@ -111,11 +137,17 @@ json run_backtest(const Config& config) {
                           {"return_pct", t.return_pct}});
     }
 
-    return {{"symbol", config.symbol},
-            {"strategy", {{"id", config.strategy_id}, {"params", config.strategy_params}}},
-            {"metrics", metrics_to_json(metrics)},
-            {"equity_curve", equity},
-            {"trades", trades}};
+    json symbols = json::array();
+    for (const auto& entry : universe) symbols.push_back(entry.first);
+
+    json results = {{"symbols", symbols},
+                    {"strategy", {{"id", config.strategy_id}, {"params", config.strategy_params}}},
+                    {"metrics", metrics_to_json(metrics)},
+                    {"equity_curve", equity},
+                    {"trades", trades}};
+    // Backward-compatible single-symbol echo for current consumers.
+    if (symbols.size() == 1) results["symbol"] = symbols[0];
+    return results;
 }
 
 }  // namespace bt
