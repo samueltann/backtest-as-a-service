@@ -23,15 +23,19 @@ struct overloaded : Ts... {
 template <class... Ts>
 overloaded(Ts...) -> overloaded<Ts...>;
 
-void validate_date(const std::string& date, const char* field) {
-    if (date.size() != 10 || date[4] != '-' || date[7] != '-')
-        throw EngineError(std::string(field) + " must be YYYY-MM-DD, got: " + date);
+Date parse_config_date(const std::string& s, const char* field) {
+    try {
+        return Date::parse(s);
+    } catch (const std::invalid_argument&) {
+        throw EngineError(std::string(field) + " must be a valid date (YYYY-MM-DD), got: " + s);
+    }
 }
 
 }  // namespace
 
 Config Config::from_json(const json& j) {
     Config c;
+    std::string start_str, end_str;
     try {
         c.strategy_id = j.at("strategy").at("id").get<std::string>();
         c.strategy_params = j.at("strategy").value("params", json::object());
@@ -48,8 +52,8 @@ Config Config::from_json(const json& j) {
             c.universe.emplace_back(c.symbol, c.data_file);
         }
 
-        c.start_date = j.at("start_date").get<std::string>();
-        c.end_date = j.at("end_date").get<std::string>();
+        start_str = j.at("start_date").get<std::string>();
+        end_str = j.at("end_date").get<std::string>();
         c.initial_capital = j.value("initial_capital", 100000.0);
         c.commission_bps = j.value("commission_bps", 0.0);
         c.slippage_bps = j.value("slippage_bps", 0.0);
@@ -59,8 +63,8 @@ Config Config::from_json(const json& j) {
     }
 
     if (c.universe.empty()) throw EngineError("config must list at least one symbol");
-    validate_date(c.start_date, "start_date");
-    validate_date(c.end_date, "end_date");
+    c.start_date = parse_config_date(start_str, "start_date");
+    c.end_date = parse_config_date(end_str, "end_date");
     if (c.start_date >= c.end_date) throw EngineError("start_date must be before end_date");
     if (c.initial_capital <= 0.0) throw EngineError("initial_capital must be positive");
     if (c.position_fraction <= 0.0 || c.position_fraction > 1.0)
@@ -123,13 +127,13 @@ json run_backtest(const Config& config) {
 
     json equity = json::array();
     for (const auto& point : portfolio.equity_curve())
-        equity.push_back({point.date, point.equity});
+        equity.push_back({point.date.to_string(), point.equity});
 
     json trades = json::array();
     for (const auto& t : portfolio.trades()) {
         trades.push_back({{"symbol", t.symbol},
-                          {"entry_date", t.entry_date},
-                          {"exit_date", t.exit_date},
+                          {"entry_date", t.entry_date.to_string()},
+                          {"exit_date", t.exit_date.to_string()},
                           {"quantity", t.quantity},
                           {"entry_price", t.entry_price},
                           {"exit_price", t.exit_price},

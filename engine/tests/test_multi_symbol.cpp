@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "bt/data_handler.hpp"
+#include "bt/date.hpp"
 #include "bt/engine.hpp"
 #include "bt/execution.hpp"
 
@@ -53,27 +54,28 @@ TEST_CASE("MultiCsvDataHandler merges symbols by date and stamps the symbol") {
     auto b = write_csv("bt_ms_b.csv", {{"2024-01-02", {20, 20}},
                                        {"2024-01-03", {21, 21}},
                                        {"2024-01-04", {22, 22}}});
-    MultiCsvDataHandler data({{"AAA", a}, {"BBB", b}}, "2024-01-01", "2024-12-31");
+    MultiCsvDataHandler data({{"AAA", a}, {"BBB", b}},
+                             Date::parse("2024-01-01"), Date::parse("2024-12-31"));
 
     auto s1 = data.next_slice();
     REQUIRE(s1.has_value());
-    REQUIRE(s1->date == "2024-01-01");
+    REQUIRE(s1->date.to_string() == "2024-01-01");
     REQUIRE(s1->bars.size() == 1);
     REQUIRE(s1->bars.count("AAA") == 1);
     REQUIRE(s1->bars.at("AAA").symbol == "AAA");   // symbol stamped onto the Bar
     REQUIRE(s1->bars.at("AAA").close == Approx(10.0));
 
     auto s2 = data.next_slice();
-    REQUIRE(s2->date == "2024-01-02");
+    REQUIRE(s2->date.to_string() == "2024-01-02");
     REQUIRE(s2->bars.size() == 2);                 // both symbols trade this date
     REQUIRE(s2->bars.at("BBB").close == Approx(20.0));
 
     auto s3 = data.next_slice();
-    REQUIRE(s3->date == "2024-01-03");
+    REQUIRE(s3->date.to_string() == "2024-01-03");
     REQUIRE(s3->bars.size() == 2);
 
     auto s4 = data.next_slice();
-    REQUIRE(s4->date == "2024-01-04");
+    REQUIRE(s4->date.to_string() == "2024-01-04");
     REQUIRE(s4->bars.size() == 1);                 // only BBB still trading
     REQUIRE(s4->bars.count("BBB") == 1);
 
@@ -84,11 +86,11 @@ TEST_CASE("MultiCsvDataHandler merges symbols by date and stamps the symbol") {
 
 TEST_CASE("execution queues and fills orders independently per symbol") {
     SimulatedExecutionHandler exec(/*commission_bps=*/0.0, /*slippage_bps=*/0.0);
-    exec.on_order(OrderEvent{"2024-01-01", OrderSide::Buy, 10, "AAA"});
-    exec.on_order(OrderEvent{"2024-01-01", OrderSide::Buy, 20, "BBB"});
+    exec.on_order(OrderEvent{Date::parse("2024-01-01"), OrderSide::Buy, 10, "AAA"});
+    exec.on_order(OrderEvent{Date::parse("2024-01-01"), OrderSide::Buy, 20, "BBB"});
 
     // An AAA bar fills only AAA's order; BBB's stays queued.
-    Bar aaa{"2024-01-02", 100.0, 100.0, 100.0, 100.0, 0.0, "AAA"};
+    Bar aaa{Date::parse("2024-01-02"), 100.0, 100.0, 100.0, 100.0, 0.0, "AAA"};
     auto f1 = exec.on_new_bar("AAA", aaa);
     REQUIRE(f1.size() == 1);
     REQUIRE(f1[0].symbol == "AAA");
@@ -96,7 +98,7 @@ TEST_CASE("execution queues and fills orders independently per symbol") {
     REQUIRE(exec.has_pending());
 
     // BBB fills later, at ITS own next bar's open.
-    Bar bbb{"2024-01-05", 50.0, 50.0, 50.0, 50.0, 0.0, "BBB"};
+    Bar bbb{Date::parse("2024-01-05"), 50.0, 50.0, 50.0, 50.0, 0.0, "BBB"};
     auto f2 = exec.on_new_bar("BBB", bbb);
     REQUIRE(f2.size() == 1);
     REQUIRE(f2[0].symbol == "BBB");
@@ -121,8 +123,8 @@ TEST_CASE("basket shares capital and marks absent symbols to their last close") 
     c.universe = {{"AAA", a}, {"BBB", b}};
     c.strategy_id = "buy_hold";
     c.strategy_params = json::object();
-    c.start_date = "2024-01-01";
-    c.end_date = "2024-12-31";
+    c.start_date = Date::parse("2024-01-01");
+    c.end_date = Date::parse("2024-12-31");
     c.initial_capital = 10000.0;
     c.position_fraction = 0.5;
 
@@ -154,8 +156,8 @@ TEST_CASE("cross-sectional momentum holds the top name and rotates as leadership
     c.universe = {{"X", x}, {"Y", y}, {"Z", z}};
     c.strategy_id = "xs_momentum";
     c.strategy_params = {{"lookback", 2}, {"top_k", 1}};
-    c.start_date = "2024-01-01";
-    c.end_date = "2024-12-31";
+    c.start_date = Date::parse("2024-01-01");
+    c.end_date = Date::parse("2024-12-31");
     c.initial_capital = 100000.0;
     c.position_fraction = 0.95;
 
@@ -182,8 +184,8 @@ TEST_CASE("legacy single-symbol Config and config JSON still work") {
         c.data_file = csv;
         c.strategy_id = "buy_hold";
         c.strategy_params = json::object();
-        c.start_date = "2024-01-01";
-        c.end_date = "2024-12-31";
+        c.start_date = Date::parse("2024-01-01");
+        c.end_date = Date::parse("2024-12-31");
         c.initial_capital = 10000.0;
         c.position_fraction = 1.0;
 
@@ -214,5 +216,12 @@ TEST_CASE("legacy single-symbol Config and config JSON still work") {
         REQUIRE(c.universe.size() == 1);
         REQUIRE(c.universe[0].first == "AAA");
         REQUIRE(c.universe[0].second == "a.csv");
+    }
+
+    SECTION("from_json rejects a malformed date with EngineError") {
+        json j = {{"strategy", {{"id", "buy_hold"}, {"params", json::object()}}},
+                  {"symbol", "AAA"}, {"data_file", "a.csv"},
+                  {"start_date", "2024-13-01"}, {"end_date", "2024-12-31"}};
+        REQUIRE_THROWS_AS(Config::from_json(j), EngineError);
     }
 }

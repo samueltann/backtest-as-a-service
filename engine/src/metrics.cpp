@@ -1,11 +1,7 @@
 #include "bt/metrics.hpp"
 
-#include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <limits>
-
-#include "bt/data_handler.hpp"
 
 namespace bt {
 
@@ -13,15 +9,8 @@ namespace {
 constexpr double kTradingDaysPerYear = 252.0;
 }
 
-int days_between(const std::string& from, const std::string& to) {
-    auto parse = [](const std::string& s) {
-        int y = 0, m = 0, d = 0;
-        if (std::sscanf(s.c_str(), "%d-%d-%d", &y, &m, &d) != 3)
-            throw EngineError("invalid date: " + s);
-        using namespace std::chrono;
-        return sys_days{year{y} / m / d};
-    };
-    return static_cast<int>((parse(to) - parse(from)).count());
+int days_between(const Date& from, const Date& to) {
+    return from.days_until(to);
 }
 
 Metrics compute_metrics(const std::vector<EquityPoint>& equity_curve,
@@ -68,7 +57,7 @@ Metrics compute_metrics(const std::vector<EquityPoint>& equity_curve,
 
     // Max drawdown and its longest peak-to-recovery duration.
     double peak = equity_curve.front().equity;
-    std::string peak_date = equity_curve.front().date;
+    Date peak_date = equity_curve.front().date;
     for (const auto& point : equity_curve) {
         if (point.equity >= peak) {
             int span = days_between(peak_date, point.date);

@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "bt/date.hpp"
 #include "bt/events.hpp"
 
 namespace bt {
@@ -21,8 +22,8 @@ struct EngineError : std::runtime_error {
 // Throws EngineError on I/O errors, malformed rows, or an empty range.
 std::vector<Bar> load_csv(const std::string& csv_path,
                           const std::string& symbol,
-                          const std::string& start_date,
-                          const std::string& end_date);
+                          const Date& start_date,
+                          const Date& end_date);
 
 // Streams time slices chronologically across a universe of symbols. Each step
 // emits every symbol's bar that shares the next date (the ascending union of all
@@ -33,8 +34,8 @@ public:
     // symbol_files: (symbol, csv_path) pairs. Order is irrelevant; bars are keyed
     // by symbol internally.
     MultiCsvDataHandler(const std::vector<std::pair<std::string, std::string>>& symbol_files,
-                        const std::string& start_date,
-                        const std::string& end_date);
+                        const Date& start_date,
+                        const Date& end_date);
 
     // Returns the next slice and advances, or nullopt when all series are exhausted.
     std::optional<TimeSlice> next_slice();
@@ -44,7 +45,7 @@ public:
 private:
     std::map<std::string, std::vector<Bar>> series_;  // symbol -> chronological bars
     std::map<std::string, std::size_t> cursor_;       // symbol -> next index in series_
-    std::vector<std::string> dates_;                  // sorted unique union of all dates
+    std::vector<Date> dates_;                         // sorted unique union of all dates
     std::size_t date_cursor_ = 0;
 };
 
@@ -53,8 +54,8 @@ private:
 class CsvDataHandler {
 public:
     CsvDataHandler(const std::string& csv_path,
-                   const std::string& start_date,
-                   const std::string& end_date);
+                   const Date& start_date,
+                   const Date& end_date);
 
     // Returns the next bar and advances, or nullopt when exhausted.
     std::optional<Bar> next();

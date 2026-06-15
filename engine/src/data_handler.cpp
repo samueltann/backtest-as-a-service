@@ -21,8 +21,8 @@ std::vector<std::string> split_csv_line(const std::string& line) {
 
 std::vector<Bar> load_csv(const std::string& csv_path,
                           const std::string& symbol,
-                          const std::string& start_date,
-                          const std::string& end_date) {
+                          const Date& start_date,
+                          const Date& end_date) {
     std::ifstream in(csv_path);
     if (!in) throw EngineError("cannot open data file: " + csv_path);
 
@@ -57,7 +57,12 @@ std::vector<Bar> load_csv(const std::string& csv_path,
 
         Bar bar;
         bar.symbol = symbol;
-        bar.date = fields[idx_date];
+        try {
+            bar.date = Date::parse(fields[idx_date]);
+        } catch (const std::exception&) {
+            throw EngineError("invalid date in CSV at line " + std::to_string(line_no) +
+                              ": " + fields[idx_date]);
+        }
         if (bar.date < start_date || bar.date > end_date) continue;
         try {
             bar.open = std::stod(fields[idx_open]);
@@ -76,18 +81,18 @@ std::vector<Bar> load_csv(const std::string& csv_path,
               [](const Bar& a, const Bar& b) { return a.date < b.date; });
 
     if (bars.empty())
-        throw EngineError("no bars in range " + start_date + " to " + end_date +
-                          (symbol.empty() ? "" : " for " + symbol));
+        throw EngineError("no bars in range " + start_date.to_string() + " to " +
+                          end_date.to_string() + (symbol.empty() ? "" : " for " + symbol));
     return bars;
 }
 
 MultiCsvDataHandler::MultiCsvDataHandler(
     const std::vector<std::pair<std::string, std::string>>& symbol_files,
-    const std::string& start_date,
-    const std::string& end_date) {
+    const Date& start_date,
+    const Date& end_date) {
     if (symbol_files.empty()) throw EngineError("no symbols provided");
 
-    std::set<std::string> all_dates;
+    std::set<Date> all_dates;
     for (const auto& [symbol, path] : symbol_files) {
         if (series_.count(symbol)) throw EngineError("duplicate symbol: " + symbol);
         auto bars = load_csv(path, symbol, start_date, end_date);
@@ -100,7 +105,7 @@ MultiCsvDataHandler::MultiCsvDataHandler(
 
 std::optional<TimeSlice> MultiCsvDataHandler::next_slice() {
     if (date_cursor_ >= dates_.size()) return std::nullopt;
-    const std::string& date = dates_[date_cursor_++];
+    const Date& date = dates_[date_cursor_++];
 
     TimeSlice slice;
     slice.date = date;
@@ -118,8 +123,8 @@ std::optional<TimeSlice> MultiCsvDataHandler::next_slice() {
 }
 
 CsvDataHandler::CsvDataHandler(const std::string& csv_path,
-                               const std::string& start_date,
-                               const std::string& end_date)
+                               const Date& start_date,
+                               const Date& end_date)
     : bars_(load_csv(csv_path, /*symbol=*/"", start_date, end_date)) {}
 
 std::optional<Bar> CsvDataHandler::next() {

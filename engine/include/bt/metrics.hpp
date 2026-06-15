@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "bt/date.hpp"
 #include "bt/portfolio.hpp"
 
 namespace bt {
@@ -28,7 +29,7 @@ Metrics compute_metrics(const std::vector<EquityPoint>& equity_curve,
 
 nlohmann::json metrics_to_json(const Metrics& m);
 
-// Calendar days between two ISO dates ("YYYY-MM-DD"). Exposed for testing.
-int days_between(const std::string& from, const std::string& to);
+// Calendar days between two dates (to - from). Exposed for testing.
+int days_between(const Date& from, const Date& to);
 
 }  // namespace bt

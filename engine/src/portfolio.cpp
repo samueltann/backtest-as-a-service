@@ -86,7 +86,7 @@ void Portfolio::on_fill(const FillEvent& fill) {
     }
 }
 
-void Portfolio::mark_to_market(const std::string& date) {
+void Portfolio::mark_to_market(const Date& date) {
     equity_curve_.push_back({date, total_equity()});
 }
 

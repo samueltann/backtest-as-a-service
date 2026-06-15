@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "bt/date.hpp"
 #include "bt/events.hpp"
 
 namespace bt {
@@ -12,8 +13,8 @@ namespace bt {
 // A completed round-trip trade (entry to flat) for one symbol, used for
 // trade-level metrics.
 struct Trade {
-    std::string entry_date;
-    std::string exit_date;
+    Date entry_date;
+    Date exit_date;
     long quantity = 0;
     double entry_price = 0.0;   // average fill price including slippage
     double exit_price = 0.0;
@@ -23,7 +24,7 @@ struct Trade {
 };
 
 struct EquityPoint {
-    std::string date;
+    Date date;
     double equity = 0.0;
 };
 
@@ -52,7 +53,7 @@ public:
 
     // Record combined equity at the end of a slice. Symbols with no bar on this
     // date are carried forward at their last known close.
-    void mark_to_market(const std::string& date);
+    void mark_to_market(const Date& date);
 
     double initial_capital() const { return initial_capital_; }
     double cash() const { return cash_; }
@@ -63,7 +64,7 @@ public:
 private:
     // Open-trade bookkeeping for the trade log, per symbol.
     struct OpenLot {
-        std::string entry_date;
+        Date entry_date;
         double cost = 0.0;   // cash spent incl. commission
         long qty = 0;
     };
